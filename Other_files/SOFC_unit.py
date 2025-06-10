@@ -18,7 +18,6 @@ import idaes.core.util.scaling as iscale
 from idaes.core.util.model_statistics import degrees_of_freedom, report_statistics
 from idaes.core.util.exceptions import ConfigurationError, InitializationError
 import idaes.logger as idaeslog
-from pyomo.environ import Suffix
 
 @declare_process_block_class("SofcUnit", doc="Simple SOFC model for process design.")
 class SofcDesignData(UnitModelBlockData):
@@ -116,7 +115,6 @@ class SofcDesignData(UnitModelBlockData):
         self._translator_h2_out_constraints()
         self._translator_o2_out_constraints()
         self._add_ports()
-        self._setup_scaling_factors()
 
     def _add_reaction(self):
         reaction_comps  = {"H2", "H2O", "O2"}
@@ -164,9 +162,8 @@ class SofcDesignData(UnitModelBlockData):
         self.mixer = um.Mixer(
             inlet_list                   = ["fuel_strm", "o2_rich_strm"],
             property_package             = self.reaction_props,
-            momentum_mixing_type         = um.MomentumMixingType.none, 
-            #energy_mixing_type           = um.MixingType.none,
-            material_balance_type        = MaterialBalanceType.componentTotal
+            momentum_mixing_type         = um.MomentumMixingType.none,
+            energy_mixing_type           = um.MixingType.none,
         )
 
         # 5) SOEC reactor
@@ -174,8 +171,7 @@ class SofcDesignData(UnitModelBlockData):
             property_package             = self.reaction_props,
             reaction_package             = self.rxn_props,
             has_pressure_change          = False,
-            has_heat_transfer            = False,
-            has_heat_of_reaction         = True,
+            has_heat_transfer            = True,
         )
 
         # 6) Separator after reactor (water/O2 separation)
@@ -203,8 +199,8 @@ class SofcDesignData(UnitModelBlockData):
         # 9) Mixer for recycled O2 and N2 bleed
         self.mixer_out = um.Mixer(
             inlet_list                   = ["o2_strm_final", "o2_poor_strm"],
-            property_package             = self.config.cathode_side_prop_package,
             momentum_mixing_type         = um.MomentumMixingType.none,
+            property_package             = self.config.cathode_side_prop_package,
         )
 
         # 10) Heater for final gas conditioning
@@ -260,7 +256,7 @@ class SofcDesignData(UnitModelBlockData):
             self.flowsheet().time, 
             initialize=0, 
             bounds=(0, 0.4),
-            units=pyo.units.ampere / (pyo.units.m**2)/10000, 
+            units=pyo.units.ampere / pyo.units.m**2, 
             doc="Current density",
         )
         self.cell_voltage = Var(
@@ -277,7 +273,7 @@ class SofcDesignData(UnitModelBlockData):
         )
         self.cell_area = Var(
             domain=pyo.NonNegativeReals,
-            units= (pyo.units.m**2)/10000, 
+            units= pyo.units.m**2, 
             doc="Single-cell active area",
         )
         self.sofc_power_dc = Var(
@@ -312,7 +308,6 @@ class SofcDesignData(UnitModelBlockData):
                 * (1 - self.fuel_util[t])
             )
         
-        
         @self.Expression(time)
         def current_density_expr(b, t):
             return (
@@ -325,7 +320,6 @@ class SofcDesignData(UnitModelBlockData):
         def current_density_eqn(b, t):
             return b.i[t] == b.current_density_expr[t]
         
-        #From fit of polarization curve just for now use polynmial
         @self.Constraint(time)
         def voltage_eqn(b, t):
             return b.cell_voltage[t] == (
@@ -339,12 +333,24 @@ class SofcDesignData(UnitModelBlockData):
         
         @self.Constraint(time)
         def sofc_power_dc_constraint(b, t):
-            return b.sofc_power_dc[t] == b.i[t] * b.cell_voltage[t] * b.number_of_cells * b.cell_area
-
+            return b.sofc_power_dc[t] == b.i[t] * b.cell_voltage[t] * b.number_of_cells
+        
         @self.Constraint(time)
         def sofc_energy_balance(b, t):
-            return pyo.units.convert(b.heater.control_volume.heat[t], to_units=pyo.units.W) == b.sofc_power_dc[t] + pyo.units.convert(b.reactor.control_volume.heat_of_reaction[t], to_units=pyo.units.W) 
-  
+            #  LATO SINISTRO: calore “prodotto” dal reattore (segno cambiato)
+            lhs = - pyo.units.convert(b.reactor.heat_duty[t], to_units=pyo.units.W)
+
+            #  LATO DESTRO: potenza elettrica + calore scambiato con l’Heater
+            rhs = b.sofc_power_dc[t] + pyo.units.convert(
+                    b.heater.control_volume.heat[t], to_units=pyo.units.W)
+
+            return lhs == rhs
+
+        @self.Constraint(time)
+        def heater_inequality(b, t):
+            return b.heater.control_volume.heat[t] <= 0
+    
+
         @self.Constraint(time)
         def dT_upper(b, t):
             return ( b.mixer_out.mixed_state[t].temperature
@@ -353,7 +359,7 @@ class SofcDesignData(UnitModelBlockData):
         @self.Constraint(time)
         def dT_lower(b, t):
             return ( b.mixer_out.mixed_state[t].temperature
-                - b.translator_h2_out.properties_out[t].temperature ) >= -10 
+                - b.translator_h2_out.properties_out[t].temperature ) >= -10
         
         
         @self.mixer_out.Constraint(time)
@@ -420,19 +426,11 @@ class SofcDesignData(UnitModelBlockData):
         time = self.flowsheet().time
         t0 = self.flowsheet().time.first()
 
-        #OUTLET MOLAR FRACTIONS "BALANCE"
+        # OUTLET MOLAR FRACTIONS "BALANCE"
         @self.translator_o2_out.Constraint(time)
         def mole_frac_eqn_o2_out_OUT(b, t):
             return b.properties_out[t].mole_frac_comp['N2'] == 1e-19
-
-        # comps_out = set(self.translator_o2_out.properties_out[0].mole_frac_comp.keys())
-        # @self.translator_o2_out.Constraint(time, comps_out)
-        # def mole_frac_eqn_o2_out(b, t, j):
-        #     if j == "O2":
-        #         return b.properties_out[t].mole_frac_comp[j] == b.properties_in[t].mole_frac_comp[j]
-        #     else: 
-        #         return b.properties_out[t].mole_frac_comp[j] == 1e-19
-
+        
         self._general_translators_constraints(self.translator_o2_out)
 
     def _add_ports(self):
@@ -458,48 +456,6 @@ class SofcDesignData(UnitModelBlockData):
             doc="Oxygen side outlet port",
         )
 
-    def _setup_scaling_factors(self):
-        """
-        Simple one-stop scaling routine for the SOFC example flowsheet.
-
-        Call *after* you create `model = sofc_example_flowsheet()` and
-        *before* you solve.
-        """
-
-        # ------------------------------------------------------------------
-        # 1)  Default scaling for every property package we use
-        # ------------------------------------------------------------------
-        for pp in [
-            self.config.anode_side_prop_package,     # H2/H2O
-            self.config.cathode_side_prop_package,   # O2/N2 (air)
-            self.reaction_props,         # common reaction basis
-        ]:
-            pp.set_default_scaling("flow_mol", 1e1)
-            pp.set_default_scaling("flow_mol_phase", 1e1)
-            pp.set_default_scaling("temperature", 1e-2)
-            pp.set_default_scaling("pressure", 1e-2)
-            pp.set_default_scaling("mole_frac_comp", 1e2)
-            pp.set_default_scaling("mole_frac_phase_comp", 1e2)
-            pp.set_default_scaling("enth_mol_phase", 1e-5)   # ≈ 2 × 10⁵ J mol⁻¹
-            pp.set_default_scaling("entr_mol_phase", 1e-5)
-
-        # ------------------------------------------------------------------
-        # 2)  Specific variables that the defaults don’t catch
-        # ------------------------------------------------------------------
-        # -- reaction extent (mol s⁻¹) in the SOFC reactor
-        for (t, rxn), var in (
-                self.reactor.control_volume.rate_reaction_extent.items()):
-            if rxn == "h2_cmb":
-                iscale.set_scaling_factor(var, 50)            # brings O(10-2) → O(1))
-
-        # ------------------------------------------------------------------
-        # 3)  Compute & apply the scaling – and silence the warnings
-        # ------------------------------------------------------------------
-        idaeslog.getLogger("idaes.core.util.scaling",
-                        level=idaeslog.ERROR)              
-
-        iscale.calculate_scaling_factors(self)                   
-
     def initialize_build(
             self,
             outlvl=idaeslog.NOTSET,
@@ -511,13 +467,18 @@ class SofcDesignData(UnitModelBlockData):
         from pyomo.common.collections import ComponentSet
         from idaes.core.util.model_statistics import degrees_of_freedom
         from pyomo.util.infeasible import log_infeasible_constraints
+        from idaes.core.util import from_json, to_json, StoreSpec
+        from idaes.core.solvers import get_solver
 
         logging.getLogger("pyomo.core").setLevel(logging.INFO)
         logging.getLogger("pyomo.util.infeasible").setLevel(logging.INFO)
 
         init_log = idaeslog.getInitLogger(self.name, outlvl, tag="unit")
-
+        solve_log = idaeslog.getSolveLogger(self.name, outlvl, tag="unit")
         init_log.info_high("SOEC Initialization Starting")
+        #solver_obj = get_solver(solver, optarg)
+        sp = StoreSpec.value_isfixed_isactive(only_fixed=True)
+        istate = to_json(self, return_dict=True, wts=sp)
 
         self.anode_side_inlet.fix()
         self.cathode_side_inlet.fix()
@@ -553,7 +514,103 @@ class SofcDesignData(UnitModelBlockData):
         propagate_state(self.heater_to_mixer_out)
         propagate_state(self.mix_o2_final)
         self.mixer_out.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
+        from_json(self, sd=istate, wts=sp)
+        init_log.info_high("SOEC Initialization Complete")
 
 
 
-    
+
+
+    # def initialize_build(
+    #         self,
+    #         outlvl=idaeslog.NOTSET,
+    #         solver=None,
+    #         optarg=None,
+    # ):
+
+    #     import logging
+    #     from idaes.core.util.initialization import propagate_state
+
+    #     logging.getLogger("pyomo.core").setLevel(logging.INFO)
+    #     logging.getLogger("pyomo.util.infeasible").setLevel(logging.INFO)
+
+    #     init_log = idaeslog.getInitLogger(self.name, outlvl, tag="unit")
+    #     init_log.info_high("SOFC Initialization Starting")
+
+    #     units_sequence = [
+    #         (self.translator_h2, self.mix_h2),
+    #         (self.separator, self.o2_to_translator),
+    #         (self.translator_o2, self.mix_o2),
+    #         (self.mixer, self.mix_to_reactor),
+    #         (self.reactor, self.react_to_sep),
+    #         (self.reactor_separator, None),
+    #         (self.translator_h2_out, self.separator_fuel_to_translator),
+    #         (self.translator_o2_out, self.separator_o2rich_to_translator),
+    #         (self.heater, self.o2_poor_to_heater),
+    #         (self.mixer_out, [self.heater_to_mixer_out, self.mix_o2_final])
+    #     ]
+
+    #     for unit, arcs in units_sequence:
+    #         init_log.info(f"Initializing {unit.name}, DOF before: {degrees_of_freedom(unit)}")
+            
+    #         # initialize unit
+    #         unit.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
+            
+    #         init_log.info(f"DOF after initializing {unit.name}: {degrees_of_freedom(unit)}")
+            
+    #         # propagate states if necessary
+    #         if arcs:
+    #             if isinstance(arcs, list):
+    #                 for arc in arcs:
+    #                     propagate_state(arc)
+    #             else:
+    #                 propagate_state(arcs)
+
+    #     # DOF check finale per tutto il modello
+    #     total_dof = degrees_of_freedom(self)
+    #     init_log.info_high(f"Initialization complete. Total DOF for the model: {total_dof}")
+
+
+
+        
+        
+        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
