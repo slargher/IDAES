@@ -130,7 +130,7 @@ class SofcDesignData(UnitModelBlockData):
         self._add_constraints()
         self._translator_h2_in_constraints()
         self._translator_o2_in_constraints()
-        self._translator_h2_out_constraints()
+        #self._translator_h2_out_constraints()
         self._translator_o2_out_constraints()
         self._add_ports()
         self._setup_scaling_factors()
@@ -517,21 +517,21 @@ class SofcDesignData(UnitModelBlockData):
         
         self._general_translators_constraints(self.translator_o2)
 
-    def _translator_h2_out_constraints(self):
-        time = self.flowsheet().time
-        t0 = self.flowsheet().time.first()
-
-        comps_out = set(self.translator_h2_out.properties_out[t0].mole_frac_comp.keys())
-        comps_out.remove("H2")
-
-        @self.translator_h2_out.Constraint(time, comps_out)
-        def component_flow_eqn_h2_out(b, t, j):
-            return (
-                        b.properties_out[t].mole_frac_comp[j]
-                        == b.properties_in[t].mole_frac_comp[j]
-                    )
-        
-        self._general_translators_constraints(self.translator_h2_out)
+    # def _translator_h2_out_constraints(self):
+    #     time = self.flowsheet().time
+    #     t0 = self.flowsheet().time.first()
+    #
+    #     comps_out = set(self.translator_h2_out.properties_out[t0].mole_frac_comp.keys())
+    #     comps_out.remove("H2")
+    #
+    #     @self.translator_h2_out.Constraint(time, comps_out)
+    #     def component_flow_eqn_h2_out(b, t, j):
+    #         return (
+    #                     b.properties_out[t].mole_frac_comp[j]
+    #                     == b.properties_in[t].mole_frac_comp[j]
+    #                 )
+    #     
+    #     self._general_translators_constraints(self.translator_h2_out)
 
     def _translator_o2_out_constraints(self):
         time = self.flowsheet().time
