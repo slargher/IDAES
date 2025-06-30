@@ -346,6 +346,16 @@ class SofcDesignData(UnitModelBlockData):
             units= pyo.units.dimensionless,
             doc="Fuel-utilisation factor",
         )
+
+        self.ammonia_util = Var(
+            self.flowsheet().time, 
+            initialize=1.0, 
+            bounds=(0, 1),
+            units= pyo.units.dimensionless,
+            doc="Ammonia-utilisation factor",
+        )
+
+
         self.number_of_cells = Var(
             domain=pyo.NonNegativeIntegers,
             units=pyo.units.dimensionless, 
@@ -400,7 +410,25 @@ class SofcDesignData(UnitModelBlockData):
         self.nh3_separator.split_fraction[:, "h2_strm", "NH3"].fix(0)
 
         #self.cracker.conversion[:, "nh3_crk"].fix(1.0)
+        #SARA:does it make sense?
+        @self.cracker.Constraint(time)
+        def ammonia_utilization_eqn(b, t):
+             return (
+                  b.control_volume.properties_out[t].flow_mol_comp["NH3"]
+                  == b.control_volume.properties_in[t].flow_mol_comp["NH3"]
+                  * (1.0 - self.ammonia_util[t])
+              )
 
+        #sara:added new
+        @self.mixer_out.Constraint(time)
+        def pressure_eqn_mixer_out(b, t):
+            return b.mixed_state[t].pressure == b.o2_strm_state[t].pressure
+        
+        #sara:added new
+        @self.mixer_n2.Constraint(time)
+        def pressure_eqn_mixer_n2(b, t):
+            return b.mixed_state[t].pressure == b.o2_poor_strm_state[t].pressure
+        
         @self.mixer.Constraint(time)
         def pressure_eqn_mixer_in(b, t):
             return b.mixed_state[t].pressure == b.h2_strm_state[t].pressure
