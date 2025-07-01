@@ -28,26 +28,15 @@ class SofcDesignData(UnitModelBlockData):
         "cathode_side_prop_package",
         ConfigValue(
             domain=is_physical_parameter_block,
-            description="Property package for the oxygen side.",
+            description="Property package for the air side.",
             doc=(
-                "Property package for the oxygen side, using "
+                "Property package for the air side, using "
                 "idaes.models_extra.power_generation.properties.natural_gas_PR is "
                 "strongly recommended, either Peng-Robinson or Ideal is okay"
             ),
         ),
     )
-    CONFIG.declare(
-        "anode_side_prop_package",
-        ConfigValue(
-            domain=is_physical_parameter_block,
-            description="Property package for the hydrogen side.",
-            doc=(
-                "Property package for the hydrogen side, using "
-                "idaes.models_extra.power_generation.properties.natural_gas_PR is "
-                "strongly recommended, either Peng-Robinson or Ideal is okay"
-            ),
-        ),
-    )
+
     CONFIG.declare(
         "cathode_side_prop_package_args",
         ConfigBlock(
@@ -56,28 +45,44 @@ class SofcDesignData(UnitModelBlockData):
             doc="Property package arguments for the oxygen side.",
         ),
     )
+
+    CONFIG = UnitModelBlockData.CONFIG(implicit=True)
+    CONFIG.declare(
+        "anode_side_prop_package",
+        ConfigValue(
+            domain=is_physical_parameter_block,
+            description="Property package for the fuel side.",
+            doc=(
+                "Property package for the fuel side, using "
+                "idaes.models_extra.power_generation.properties.natural_gas_PR is "
+                "strongly recommended, either Peng-Robinson or Ideal is okay"
+            ),
+        ),
+    )
+
     CONFIG.declare(
         "anode_side_prop_package_args",
         ConfigBlock(
             implicit=True,
-            description="Property package arguments for the hydrogen side.",
-            doc="Property package arguments for the hydrogen side.",
+            description="Property package arguments for the fuel side.",
+            doc="Property package arguments for the fuel side.",
         ),
     )
+    
 
     CONFIG.declare(
-    "ammonia_side_prop_package",
+    "recycle_side_prop_package",
     ConfigValue(
         domain=is_physical_parameter_block,
-        description="Property package for the ammonia side."
+        description="Property package for the recycle side."
         ),
     )
 
     CONFIG.declare(
-        "ammonia_side_prop_package_args",
+        "recycle_side_prop_package_args",
         ConfigBlock(
             implicit=True,
-            description="Property package arguments for the ammonia side.",
+            description="Property package arguments for the recycle side.",
         ),
     )
 
@@ -99,7 +104,7 @@ class SofcDesignData(UnitModelBlockData):
             default=False,
             domain=Bool,
             description="Heat transfer term construction flag",
-            doc="Indicates whether the SOEC is adiabatic. Default=False (adiabatic)",
+            doc="Indicates whether the SOFC is adiabatic. Default=False (adiabatic)",
         ),
     )
 
@@ -108,10 +113,10 @@ class SofcDesignData(UnitModelBlockData):
         super().build()
 
         if set(self.config.anode_side_prop_package.component_list) != {
-            "NH3",
+            "NH3", "H2", "N2",
         }:
             raise ConfigurationError(
-                "SOFC anode side must contain exactly NH3"
+                "SOFC anode side must contain exactly NH3, N2, H2"
             )
         
         if set(self.config.cathode_side_prop_package.component_list) != {
@@ -122,18 +127,33 @@ class SofcDesignData(UnitModelBlockData):
                 'SOFC cathode side must contain exactly O2 and N2'
             )
 
+        #self._add_recycle_package()
         self._add_combustion_reaction()
         self._add_cracking_reaction()
         self._add_unit_models()
         self._add_arcs()
         self._add_variables()
         self._add_constraints()
-        self._translator_h2_in_constraints()
-        self._translator_o2_in_constraints()
+        self._translator_h2_constraints()
+        self._translator_o2_constraints()
         #self._translator_h2_out_constraints()
-        self._translator_o2_out_constraints()
+        #self._translator_o2_out_constraints()
+        self._translator_n2_constraints()
+        self._translator_nh3_constraints()
         self._add_ports()
         self._setup_scaling_factors()
+
+    #def _add_recycle_package(self):
+        #"""Add anode outlet property package"""
+        #recycle_prop_package_comps  = {"H2", "H2O","N2","NH3"}
+        #self.recycle_side_prop_package = GenericParameterBlock(
+            #**get_prop(
+                #recycle_prop_package_comps,
+                #phases={"Vap"},
+                #eos=self.config.recycle_prop_package_args.eos,
+            #),
+            #doc="Physical property package for the anode outlet",
+        #)
 
     def _add_combustion_reaction(self):
         cmb_reaction_comps  = {"H2", "H2O", "O2"}
@@ -173,10 +193,10 @@ class SofcDesignData(UnitModelBlockData):
 
     def _add_unit_models(self):
 
-        # 1) Translator for NH3 stream add reaction package
+        #1) Translator for NH3 stream add reaction package
         self.translator_nh3 = um.Translator(
-            inlet_property_package       = self.config.anode_side_prop_package, #to be changed
-            inlet_property_package_args  = self.config.anode_side_prop_package_args, #to be changed 
+            inlet_property_package       = self.config.anode_side_prop_package, 
+            inlet_property_package_args  = self.config.anode_side_prop_package_args,  
             outlet_property_package      = self.crk_reaction_props,
             outlet_state_defined         = False,
         )
@@ -200,7 +220,7 @@ class SofcDesignData(UnitModelBlockData):
         # 4) Translator for N2 stream add prop package
         self.translator_n2 = um.Translator(
             inlet_property_package       = self.crk_reaction_props,  
-            outlet_property_package      = self.config.cathode_side_prop_package,
+            outlet_property_package      = self.config.recycle_prop_package,
             outlet_state_defined         = False,
         )
 
@@ -233,7 +253,7 @@ class SofcDesignData(UnitModelBlockData):
             momentum_mixing_type         = um.MomentumMixingType.none,             
         )
 
-        # 8) SOEC reactor
+        # 8) SOFC reactor
         self.reactor = um.StoichiometricReactor(
             property_package             = self.cmb_reaction_props,
             reaction_package             = self.cmb_rxn_props,
@@ -249,23 +269,28 @@ class SofcDesignData(UnitModelBlockData):
             split_basis                  = um.SplittingType.componentFlow,
         )
 
+        # 12) Heater for recycle side
+        self.heater_n2 = um.Heater(
+            property_package             = self.config.recycle_prop_package,
+            has_pressure_change          = False,
+        )
+
         # 10) Translator: water-rich stream → H2 property basis
         self.translator_h2_out = um.Translator(
             inlet_property_package       = self.cmb_reaction_props,
-            outlet_property_package      = self.config.anode_side_prop_package,
-            outlet_property_package_args = self.config.anode_side_prop_package_args,
+            outlet_property_package      = self.config.recycle_prop_package,
             outlet_state_defined         = False,
         )
 
-        # 11) Mixer for N2 from NH3 and N2 from air stream
-        self.mixer_n2 = um.Mixer(
-            inlet_list                   = ["n2_strm", "o2_poor_strm"],
-            property_package             = self.config.cathode_side_prop_package,
-            momentum_mixing_type         = um.MomentumMixingType.none,             
+        # 14) Mixer for recycled O2 and N2 mix
+        self.mixer_out = um.Mixer(
+            inlet_list                   = ["n2_strm", "h2o_strm"],
+            property_package             = self.config.recycle_prop_package,
+            momentum_mixing_type         = um.MomentumMixingType.none,
         )
 
-        # 12) Heater for final gas conditioning
-        self.heater = um.Heater(
+        # 12) Heater for cathode side
+        self.heater_air = um.Heater(
             property_package             = self.config.cathode_side_prop_package,
             has_pressure_change          = False,
         )
@@ -277,15 +302,17 @@ class SofcDesignData(UnitModelBlockData):
             outlet_state_defined         = False,
         )
 
-        # 14) Mixer for recycled O2 and N2 mix
-        self.mixer_out = um.Mixer(
-            inlet_list                   = ["n2_strm_final", "o2_strm"],
+
+        # 11) Mixer for cathode air side
+        self.mixer_air = um.Mixer(
+            inlet_list                   = ["o2_strm", "o2_poor_strm"],
             property_package             = self.config.cathode_side_prop_package,
-            momentum_mixing_type         = um.MomentumMixingType.none,
+            momentum_mixing_type         = um.MomentumMixingType.none,             
         )
 
+
     def _add_arcs(self):
-        self.nh3_to_cracker                = Arc(source=self.translator_nh3.outlet,
+        self.fuel_to_cracker                = Arc(source=self.translator_nh3.outlet,
                                              destination=self.cracker.inlet)
         
         self.cracker_to_sep               = Arc(source=self.cracker.outlet,
@@ -297,19 +324,19 @@ class SofcDesignData(UnitModelBlockData):
         self.sep_h2_to_trans               = Arc(source=self.nh3_separator.h2_strm,
                                                 destination=self.translator_h2.inlet)
         
-        self.trans_n2_to_mixer_n2             = Arc(source=self.translator_n2.outlet,
-                                                destination=self.mixer_n2.n2_strm)
+        self.trans_n2_to_heater_n2             = Arc(source=self.translator_n2.outlet,
+                                                destination=self.heater_n2.inlet)
         
-        self.n2_air_to_mixer_n2              = Arc(source=self.air_separator.o2_poor_strm,
-                                                destination=self.mixer_n2.o2_poor_strm)
+        self.heat_n2_to_mix_out             = Arc(source=self.heater_n2.outlet,
+                                                  destination=self.mixer_out.h2o_strm)
+
+        self.n2_air_to_heater_air              = Arc(source=self.air_separator.o2_poor_strm,
+                                                destination=self.heater_air.inlet)
+
+        self.heat_o2_to_mix_air               = Arc(source=self.heater_air.outlet,
+                                                destination=self.mixer_air.o2_strm)
         
-        self.n2_to_heater               = Arc(source=self.mixer_n2.outlet,
-                                                destination=self.heater.inlet)
-        
-        self.heater_to_mixer_out             = Arc(source=self.heater.outlet,
-                                                destination=self.mixer_out.n2_strm_final)
-        
-        self.o2_air_to_trans_o2                  = Arc(source=self.air_separator.o2_rich_strm,
+        self.sep_o2_to_trans                  = Arc(source=self.air_separator.o2_rich_strm,
                                                 destination=self.translator_o2.inlet)
         
         self.o2_to_mixer                          = Arc(source=self.translator_o2.outlet,
@@ -324,14 +351,17 @@ class SofcDesignData(UnitModelBlockData):
         self.react_to_sep                    = Arc(source=self.reactor.outlet,
                                                 destination=self.reactor_separator.inlet)
         
-        self.separator_fuel_to_translator    = Arc(source=self.reactor_separator.water_strm,
+        self.sep_h2o_to_trans               = Arc(source=self.reactor_separator.water_strm,
                                                 destination=self.translator_h2_out.inlet)
         
-        self.separator_o2rich_to_translator  = Arc(source=self.reactor_separator.o2_strm,
+        self.react_sep_o2_to_trans                 = Arc(source=self.reactor_separator.o2_strm,
                                                 destination=self.translator_o2_out.inlet)
 
-        self.o2_to_mixer_out                  = Arc(source=self.translator_o2_out.outlet,
-                                                destination=self.mixer_out.o2_strm)
+        self.h2o_to_mixer_out                  = Arc(source=self.translator_h2_out.outlet,
+                                                destination=self.mixer_out.h2o_strm)
+        
+        self.o2_to_mixer_air                  = Arc(source=self.translator_o2_out.outlet,
+                                                destination=self.mixer_air.o2_strm)
 
         
         # finally expand arcs
@@ -347,6 +377,7 @@ class SofcDesignData(UnitModelBlockData):
             doc="Fuel-utilisation factor",
         )
 
+        # Sara: does it make sense?
         self.ammonia_util = Var(
             self.flowsheet().time, 
             initialize=1.0, 
@@ -354,7 +385,6 @@ class SofcDesignData(UnitModelBlockData):
             units= pyo.units.dimensionless,
             doc="Ammonia-utilisation factor",
         )
-
 
         self.number_of_cells = Var(
             domain=pyo.NonNegativeIntegers,
@@ -409,7 +439,7 @@ class SofcDesignData(UnitModelBlockData):
         self.nh3_separator.split_fraction[:, "h2_strm", "N2"].fix(0)
         self.nh3_separator.split_fraction[:, "h2_strm", "NH3"].fix(0)
 
-        #self.cracker.conversion[:, "nh3_crk"].fix(1.0)
+
         #SARA:does it make sense?
         @self.cracker.Constraint(time)
         def ammonia_utilization_eqn(b, t):
@@ -419,27 +449,21 @@ class SofcDesignData(UnitModelBlockData):
                   * (1.0 - self.ammonia_util[t])
               )
 
+    
         #sara:added new
-        @self.mixer_out.Constraint(time)
-        def pressure_eqn_mixer_out(b, t):
-            return b.mixed_state[t].pressure == b.o2_strm_state[t].pressure
-        
-        #sara:added new
-        @self.mixer_n2.Constraint(time)
-        def pressure_eqn_mixer_n2(b, t):
+        @self.mixer_air.Constraint(time)
+        def pressure_eqn_mixer_air(b, t):
             return b.mixed_state[t].pressure == b.o2_poor_strm_state[t].pressure
         
         @self.mixer.Constraint(time)
         def pressure_eqn_mixer_in(b, t):
-            return b.mixed_state[t].pressure == b.h2_strm_state[t].pressure
+            return b.mixed_state[t].pressure == b.o2_rich_strm_state[t].pressure
         
-        @self.cracker.Constraint(time)
-        def conversion_eqn(b, t):
-            return (
-                b.control_volume.properties_out[t].flow_mol_comp["NH3"]
-                == b.control_volume.properties_in[t].flow_mol_comp["NH3"]
-                * (1e-19)
-            )
+        @self.mixer_out.Constraint(time)
+        def pressure_eqn_mix_out(b, t):
+            return b.mixed_state[t].pressure == b.n2_strm_state[t].pressure
+
+
         
         @self.reactor.Constraint(time)
         def fuel_utilization_eqn(b, t):
@@ -480,8 +504,8 @@ class SofcDesignData(UnitModelBlockData):
 
         @self.Constraint(time)
         def sofc_energy_balance(b, t):
-            return( pyo.units.convert(b.heater.control_volume.heat[t], to_units=pyo.units.W) 
-                   == - b.sofc_power_dc[t] - pyo.units.convert(b.reactor.control_volume.heat[t], to_units=pyo.units.W) )
+            return( pyo.units.convert(b.heater_n2.control_volume.heat[t], to_units=pyo.units.W) +  pyo.units.convert(b.heater_air.control_volume.heat[t], to_units=pyo.units.W) 
+                   == - b.sofc_power_dc[t] - pyo.units.convert(b.reactor.control_volume.heat[t], to_units=pyo.units.W) - pyo.units.convert(b.cracker.control_volume.heat[t], to_units=pyo.units.W))
   
         @self.Constraint(time)
         def dT_upper(b, t):
@@ -492,19 +516,9 @@ class SofcDesignData(UnitModelBlockData):
         def dT_lower(b, t):
             return ( b.mixer_out.mixed_state[t].temperature
                 - b.translator_h2_out.properties_out[t].temperature ) >= -b.dT_Catout_Anout[t]
+  
 
-        # @self.Constraint(time)
-        # def Impose_mole_balance_inout(b, t):
-        #     return (
-        #         b.reactor.control_volume.properties_out[t].flow_mol_comp['O2']
-        #         == 
-        #         b.reactor.control_volume.properties_in[t].flow_mol_comp['O2']
-        #         - 0.5 * b.reactor.control_volume.properties_out[t].flow_mol_comp['H2O'] * b.fuel_util[t] 
-        #     )    
 
-        @self.mixer_out.Constraint(time)
-        def pressure_eqn_mix_out(b, t):
-            return b.mixed_state[t].pressure == b.o2_strm_state[t].pressure
 
     @staticmethod
     def _general_translators_constraints(translator):
@@ -521,18 +535,18 @@ class SofcDesignData(UnitModelBlockData):
         def pressure_eqn(b, t):
             return b.properties_out[t].pressure == b.properties_in[t].pressure
          
-    # def _translator_h2_in_constraints(self):
-    #     time = self.flowsheet().time
-    #     t0 = self.flowsheet().time.first()
-    #
-    #     comp_in = set(self.translator_h2.properties_in[t0].mole_frac_comp.keys())
-    #     @self.translator_h2.Constraint(time, comp_in)
-    #     def mole_frac_eqn_h2(b, t, j): 
-    #         return b.properties_out[t].mole_frac_comp[j] == b.properties_in[t].mole_frac_comp[j]
-    #     
-    #     self._general_translators_constraints(self.translator_h2)
+    def _translator_nh3_constraints(self):
+         time = self.flowsheet().time
+         t0 = self.flowsheet().time.first()
+    
+         comp_in = set(self.translator_nh3.properties_in[t0].mole_frac_comp.keys())
+         @self.translator_nh3.Constraint(time, comp_in)
+         def mole_frac_eqn_nh3(b, t, j): 
+             return b.properties_out[t].mole_frac_comp[j] == b.properties_in[t].mole_frac_comp[j]
+         
+         self._general_translators_constraints(self.translator_nh3)
 
-    def _translator_o2_in_constraints(self):
+    def _translator_o2_constraints(self):
         time = self.flowsheet().time
         t0 = self.flowsheet().time.first()
             
@@ -545,42 +559,36 @@ class SofcDesignData(UnitModelBlockData):
         
         self._general_translators_constraints(self.translator_o2)
 
-    # def _translator_h2_out_constraints(self):
-    #     time = self.flowsheet().time
-    #     t0 = self.flowsheet().time.first()
-    #
-    #     comps_out = set(self.translator_h2_out.properties_out[t0].mole_frac_comp.keys())
-    #     comps_out.remove("H2")
-    #
-    #     @self.translator_h2_out.Constraint(time, comps_out)
-    #     def component_flow_eqn_h2_out(b, t, j):
-    #         return (
-    #                     b.properties_out[t].mole_frac_comp[j]
-    #                     == b.properties_in[t].mole_frac_comp[j]
-    #                 )
-    #     
-    #     self._general_translators_constraints(self.translator_h2_out)
+    #def _translator_h2_out_constraints(self):
+        #time = self.flowsheet().time
+        #t0 = self.flowsheet().time.first()
+    
+        #comps_out = set(self.translator_h2_out.properties_out[t0].mole_frac_comp.keys())
+        #comps_out.remove("H2")
+    
+        #@self.translator_h2_out.Constraint(time, comps_out)
+        #def component_flow_eqn_h2_out(b, t, j):
+            #return (
+                         #b.properties_out[t].mole_frac_comp[j]
+                         #== b.properties_in[t].mole_frac_comp[j]
+                    #)
+         
+        #self._general_translators_constraints(self.translator_h2_out)
 
-    def _translator_o2_out_constraints(self):
-        time = self.flowsheet().time
-        t0 = self.flowsheet().time.first()
 
-        #OUTLET MOLAR FRACTIONS "BALANCE"
-        @self.translator_o2_out.Constraint(time)
-        def mole_frac_eqn_o2_out_OUT(b, t):
-            return b.properties_out[t].mole_frac_comp['N2'] == 1e-19
 
-        # comps_out = set(self.translator_o2_out.properties_out[0].mole_frac_comp.keys())
-        # @self.translator_o2_out.Constraint(time, comps_out)
-        # def mole_frac_eqn_o2_out(b, t, j):
-        #     if j == "O2":
-        #         return b.properties_out[t].mole_frac_comp[j] == b.properties_in[t].mole_frac_comp[j]
-        #     else: 
-        #         return b.properties_out[t].mole_frac_comp[j] == 1e-19
+    #def _translator_o2_out_constraints(self):
+         #time = self.flowsheet().time
+         #t0 = self.flowsheet().time.first()
+    
+         #comp_in = set(self.translator_o2_out.properties_in[t0].mole_frac_comp.keys())
+         #@self.translator_o2_out.Constraint(time, comp_in)
+         #def mole_frac_eqn_o2_out(b, t, j): 
+             #return b.properties_out[t].mole_frac_comp[j] == b.properties_in[t].mole_frac_comp[j]
+         
+         #self._general_translators_constraints(self.translator_o2_out)
 
-        self._general_translators_constraints(self.translator_o2_out)
-
-    def _translator_h2_in_constraints(self):
+    def _translator_h2_constraints(self):
         time = self.flowsheet().time
         t0 = self.flowsheet().time.first()
 
@@ -599,6 +607,18 @@ class SofcDesignData(UnitModelBlockData):
 
         self._general_translators_constraints(self.translator_h2)
 
+    def _translator_n2_constraints(self):
+        time = self.flowsheet().time
+        t0 = self.flowsheet().time.first()
+            
+        # OUTLET MOLAR FRACTIONS "BALANCE"
+        comps_out = set(self.translator_n2.properties_out[t0].mole_frac_comp.keys())
+        comps_out.remove('N2')
+        @self.translator_n2.Constraint(time, comps_out)
+        def mole_frac_eqn_n2_out_IN(b, t, j):
+            return b.properties_out[t].mole_frac_comp[j] == 1e-19
+        
+        self._general_translators_constraints(self.translator_n2)
 
 
 
@@ -639,7 +659,7 @@ class SofcDesignData(UnitModelBlockData):
         for pp in [
             self.config.anode_side_prop_package,     # H2/H2O
             self.config.cathode_side_prop_package,
-            self.config.ammonia_side_prop_package,   # O2/N2 (air)
+            self.config.recycle_prop_package,   # O2/N2 (air)
             self.cmb_reaction_props,
             self.crk_reaction_props,         # common reaction basis
         ]:
