@@ -136,10 +136,10 @@ class SofcDesignData(UnitModelBlockData):
         self._add_constraints()
         self._translator_h2_constraints()
         self._translator_o2_constraints()
-        #self._translator_h2_out_constraints()
-        #self._translator_o2_out_constraints()
+        self._translator_h2_out_constraints()
+        self._translator_o2_out_constraints()
         self._translator_n2_constraints()
-        self._translator_nh3_constraints()
+        #self._translator_nh3_constraints()
         self._add_ports()
         self._setup_scaling_factors()
 
@@ -174,18 +174,18 @@ class SofcDesignData(UnitModelBlockData):
         )
 
     def _add_cracking_reaction(self):
-        crk_reaction_comps  = {"NH3", "H2", "N2"}
+        # crk_reaction_comps  = {"NH3", "H2", "N2"}
 
-        self.crk_reaction_props = GenericParameterBlock(
-            **get_prop(crk_reaction_comps, 
-                       phases={"Vap"}, 
-                       eos=self.config.reaction_eos,
-                       ),
-                       doc = 'Physical property package for the reaction'
-        )
+        # self.crk_reaction_props = GenericParameterBlock(
+        #     **get_prop(crk_reaction_comps, 
+        #                phases={"Vap"}, 
+        #                eos=self.config.reaction_eos,
+        #                ),
+        #                doc = 'Physical property package for the reaction'
+        # )
 
         self.crk_rxn_props = GenericReactionParameterBlock(
-            **get_rxn(self.crk_reaction_props, 
+            **get_rxn(self.config.anode_side_prop_package, 
                       {"nh3_crk"},
                       ),
                       doc = 'Reaction parameters'
@@ -194,16 +194,16 @@ class SofcDesignData(UnitModelBlockData):
     def _add_unit_models(self):
 
         #1) Translator for NH3 stream add reaction package
-        self.translator_nh3 = um.Translator(
-            inlet_property_package       = self.config.anode_side_prop_package, 
-            inlet_property_package_args  = self.config.anode_side_prop_package_args,  
-            outlet_property_package      = self.crk_reaction_props,
-            outlet_state_defined         = False,
-        )
+        # self.translator_nh3 = um.Translator(
+        #     inlet_property_package       = self.config.anode_side_prop_package, 
+        #     inlet_property_package_args  = self.config.anode_side_prop_package_args,  
+        #     outlet_property_package      = self.crk_reaction_props,
+        #     outlet_state_defined         = False,
+        # )
 
         # 2) NH3 cracker
         self.cracker = um.StoichiometricReactor(
-            property_package             = self.crk_reaction_props,
+            property_package             = self.config.anode_side_prop_package,
             reaction_package             = self.crk_rxn_props,
             has_pressure_change          = False,
             has_heat_transfer            = True,
@@ -212,21 +212,21 @@ class SofcDesignData(UnitModelBlockData):
 
         # 3) NH3 separator into H2 and N2
         self.nh3_separator = um.Separator(
-            property_package             = self.crk_reaction_props, 
+            property_package             = self.config.anode_side_prop_package, 
             outlet_list                  = ["h2_strm", "n2_strm"],
             split_basis                  = um.SplittingType.componentFlow,
         )
 
         # 4) Translator for N2 stream add prop package
         self.translator_n2 = um.Translator(
-            inlet_property_package       = self.crk_reaction_props,  
+            inlet_property_package       = self.config.anode_side_prop_package,  
             outlet_property_package      = self.config.recycle_prop_package,
             outlet_state_defined         = False,
         )
 
         # 4) Translator for H2 stream add prop package
         self.translator_h2 = um.Translator(
-            inlet_property_package       = self.crk_reaction_props,  
+            inlet_property_package       = self.config.anode_side_prop_package,  
             outlet_property_package      = self.cmb_reaction_props,
             outlet_state_defined         = False,
         )
@@ -312,8 +312,8 @@ class SofcDesignData(UnitModelBlockData):
 
 
     def _add_arcs(self):
-        self.fuel_to_cracker                = Arc(source=self.translator_nh3.outlet,
-                                             destination=self.cracker.inlet)
+        # self.fuel_to_cracker                = Arc(source=self.translator_nh3.outlet,
+        #                                      destination=self.cracker.inlet)
         
         self.cracker_to_sep               = Arc(source=self.cracker.outlet,
                                                 destination=self.nh3_separator.inlet)
@@ -456,11 +456,11 @@ class SofcDesignData(UnitModelBlockData):
             return b.mixed_state[t].pressure == b.o2_poor_strm_state[t].pressure
         
         @self.mixer.Constraint(time)
-        def pressure_eqn_mixer_in(b, t):
+        def pressure_eqn_mixer(b, t):
             return b.mixed_state[t].pressure == b.o2_rich_strm_state[t].pressure
         
         @self.mixer_out.Constraint(time)
-        def pressure_eqn_mix_out(b, t):
+        def pressure_eqn_mixer_out(b, t):
             return b.mixed_state[t].pressure == b.n2_strm_state[t].pressure
 
 
@@ -504,18 +504,28 @@ class SofcDesignData(UnitModelBlockData):
 
         @self.Constraint(time)
         def sofc_energy_balance(b, t):
-            return( pyo.units.convert(b.heater_n2.control_volume.heat[t], to_units=pyo.units.W) +  pyo.units.convert(b.heater_air.control_volume.heat[t], to_units=pyo.units.W) 
-                   == - b.sofc_power_dc[t] - pyo.units.convert(b.reactor.control_volume.heat[t], to_units=pyo.units.W) - pyo.units.convert(b.cracker.control_volume.heat[t], to_units=pyo.units.W))
+            return (pyo.units.convert(b.heater_n2.control_volume.heat[t], to_units=pyo.units.W) +  pyo.units.convert(b.heater_air.control_volume.heat[t], to_units=pyo.units.W) 
+                   == - b.sofc_power_dc[t] - pyo.units.convert(b.reactor.control_volume.heat[t], to_units=pyo.units.W) + pyo.units.convert(b.cracker.control_volume.heat[t], to_units=pyo.units.W))
   
         @self.Constraint(time)
-        def dT_upper(b, t):
-            return ( b.mixer_out.mixed_state[t].temperature
+        def dT_upper_an(b, t):
+            return ( b.cracker.control_volume.properties_in[t].temperature
                 - b.translator_h2_out.properties_out[t].temperature ) <= b.dT_Catout_Anout[t]
 
         @self.Constraint(time)
-        def dT_lower(b, t):
-            return ( b.mixer_out.mixed_state[t].temperature
+        def dT_lower_an(b, t):
+            return ( b.cracker.control_volume.properties_in[t].temperature
                 - b.translator_h2_out.properties_out[t].temperature ) >= -b.dT_Catout_Anout[t]
+        
+        @self.Constraint(time)
+        def dT_upper_cat(b, t):
+            return ( b.air_separator.mixed_state[t].temperature
+                - b.mixer_air.mixed_state[t].temperature ) <= b.dT_Catout_Anout[t]
+
+        @self.Constraint(time)
+        def dT_lower_cat(b, t):
+            return ( b.air_separator.mixed_state[t].temperature
+                - b.mixer_air.mixed_state[t].temperature ) >= -b.dT_Catout_Anout[t]
   
 
 
@@ -535,16 +545,16 @@ class SofcDesignData(UnitModelBlockData):
         def pressure_eqn(b, t):
             return b.properties_out[t].pressure == b.properties_in[t].pressure
          
-    def _translator_nh3_constraints(self):
-         time = self.flowsheet().time
-         t0 = self.flowsheet().time.first()
+    # def _translator_nh3_constraints(self):
+    #      time = self.flowsheet().time
+    #      t0 = self.flowsheet().time.first()
     
-         comp_in = set(self.translator_nh3.properties_in[t0].mole_frac_comp.keys())
-         @self.translator_nh3.Constraint(time, comp_in)
-         def mole_frac_eqn_nh3(b, t, j): 
-             return b.properties_out[t].mole_frac_comp[j] == b.properties_in[t].mole_frac_comp[j]
+    #      comp_in = set(self.translator_nh3.properties_in[t0].mole_frac_comp.keys())
+    #      @self.translator_nh3.Constraint(time, comp_in)
+    #      def mole_frac_eqn_nh3(b, t, j): 
+    #          return b.properties_out[t].mole_frac_comp[j] == b.properties_in[t].mole_frac_comp[j]
          
-         self._general_translators_constraints(self.translator_nh3)
+    #      self._general_translators_constraints(self.translator_nh3)
 
     def _translator_o2_constraints(self):
         time = self.flowsheet().time
@@ -559,34 +569,18 @@ class SofcDesignData(UnitModelBlockData):
         
         self._general_translators_constraints(self.translator_o2)
 
-    #def _translator_h2_out_constraints(self):
-        #time = self.flowsheet().time
-        #t0 = self.flowsheet().time.first()
-    
-        #comps_out = set(self.translator_h2_out.properties_out[t0].mole_frac_comp.keys())
-        #comps_out.remove("H2")
-    
-        #@self.translator_h2_out.Constraint(time, comps_out)
-        #def component_flow_eqn_h2_out(b, t, j):
-            #return (
-                         #b.properties_out[t].mole_frac_comp[j]
-                         #== b.properties_in[t].mole_frac_comp[j]
-                    #)
-         
-        #self._general_translators_constraints(self.translator_h2_out)
+    #to check
+    def _translator_n2_constraints(self):
+        time = self.flowsheet().time
+        t0 = self.flowsheet().time.first()
 
+        comp_in = set(self.translator_n2.properties_in[t0].mole_frac_comp.keys())
+        @self.translator_n2.Constraint(time, comp_in)
+        def mole_frac_eqn_n2(b, t, j): 
+            return b.properties_out[t].mole_frac_comp[j] == b.properties_in[t].mole_frac_comp[j]
+        
+        self._general_translators_constraints(self.translator_n2)
 
-
-    #def _translator_o2_out_constraints(self):
-         #time = self.flowsheet().time
-         #t0 = self.flowsheet().time.first()
-    
-         #comp_in = set(self.translator_o2_out.properties_in[t0].mole_frac_comp.keys())
-         #@self.translator_o2_out.Constraint(time, comp_in)
-         #def mole_frac_eqn_o2_out(b, t, j): 
-             #return b.properties_out[t].mole_frac_comp[j] == b.properties_in[t].mole_frac_comp[j]
-         
-         #self._general_translators_constraints(self.translator_o2_out)
 
     def _translator_h2_constraints(self):
         time = self.flowsheet().time
@@ -607,28 +601,54 @@ class SofcDesignData(UnitModelBlockData):
 
         self._general_translators_constraints(self.translator_h2)
 
-    def _translator_n2_constraints(self):
+    def _translator_h2_out_constraints(self):
+        time = self.flowsheet().time
+        t0 = self.flowsheet().time.first()
+    
+        @self.translator_h2_out.Constraint(time)
+        def mole_frac_eqn_h2_0(b, t): 
+            return b.properties_out[t].mole_frac_comp['H2O'] == b.properties_in[t].mole_frac_comp['H2O']
+        
+        comp_out = set(self.translator_h2_out.properties_out[t0].mole_frac_comp.keys())
+        comp_out.remove("H2O")
+        comp_out.remove("H2")
+        
+        @self.translator_h2_out.Constraint(time, comp_out)
+        def mole_frac_eqn_h2(b, t, j): 
+            return b.properties_out[t].mole_frac_comp[j] == 1e-19
+        
+        self._general_translators_constraints(self.translator_h2_out)
+
+
+
+    def _translator_o2_out_constraints(self):
         time = self.flowsheet().time
         t0 = self.flowsheet().time.first()
             
         # OUTLET MOLAR FRACTIONS "BALANCE"
-        comps_out = set(self.translator_n2.properties_out[t0].mole_frac_comp.keys())
-        comps_out.remove('N2')
-        @self.translator_n2.Constraint(time, comps_out)
-        def mole_frac_eqn_n2_out_IN(b, t, j):
+        comps_out = set(self.translator_o2_out.properties_out[t0].mole_frac_comp.keys())
+        comps_out.remove('O2')
+        @self.translator_o2_out.Constraint(time, comps_out)
+        def mole_frac_eqn_o2_out(b, t, j):
             return b.properties_out[t].mole_frac_comp[j] == 1e-19
         
-        self._general_translators_constraints(self.translator_n2)
-
+        self._general_translators_constraints(self.translator_o2_out)
 
 
     def _add_ports(self):
         """Add unit level ports"""
+        # self.add_inlet_port(
+        #     name="anode_side_inlet",
+        #     block=self.translator_nh3.properties_in,
+        #     doc="Ammonia side inlet port",
+        # )
+
         self.add_inlet_port(
             name="anode_side_inlet",
-            block=self.translator_nh3.properties_in,
+            block=self.cracker.control_volume.properties_in,
             doc="Ammonia side inlet port",
         )
+
         self.add_inlet_port(
             name="cathode_side_inlet",
             block=self.air_separator.mixed_state,
@@ -636,12 +656,12 @@ class SofcDesignData(UnitModelBlockData):
         )
         self.add_outlet_port(
             name="anode_side_outlet",
-            block=self.translator_h2_out.properties_out,
+            block=self.mixer_out.mixed_state,
             doc="Hydrogen side outlet port",
         )
         self.add_outlet_port(
             name="cathode_side_outlet",
-            block=self.mixer_out.mixed_state,
+            block=self.mixer_air.mixed_state,
             doc="Oxygen side outlet port",
         )
 
@@ -658,10 +678,10 @@ class SofcDesignData(UnitModelBlockData):
         # ------------------------------------------------------------------
         for pp in [
             self.config.anode_side_prop_package,     # H2/H2O
-            self.config.cathode_side_prop_package,
-            self.config.recycle_prop_package,   # O2/N2 (air)
+            self.config.cathode_side_prop_package, # O2/N2 (air)
+            self.config.recycle_prop_package,  
             self.cmb_reaction_props,
-            self.crk_reaction_props,         # common reaction basis
+            self.crk_rxn_props,         # common reaction basis
         ]:
             pp.set_default_scaling("flow_mol", 1e1)
             pp.set_default_scaling("flow_mol_phase", 1e1)
@@ -721,97 +741,104 @@ class SofcDesignData(UnitModelBlockData):
 
 
         # Initialize translator for NH3 stream
-        self.translator_nh3.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
+        #self.translator_nh3.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
+
         # Propagate state NH3 → Cracker inlet
-        propagate_state(self.nh3_to_cracker)
-        
+        #propagate_state(self.fuel_to_cracker)
+
         # Initialize NH3 cracker
         self.cracker.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
+
         # Propagate state Cracker → NH3 separator
         propagate_state(self.cracker_to_sep)
-        
+
         # Initialize NH3 separator
         self.nh3_separator.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
-        # Propagate state separator N2 stream → N2 translator inlet
+
+        # Propagate separator N2 stream → N2 translator inlet
         propagate_state(self.sep_n2_to_trans)
-        
+
         # Initialize N2 translator
         self.translator_n2.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
-        # Propagate state separator H2 stream → H2 translator inlet
+
+        # Propagate separator H2 stream → H2 translator inlet
         propagate_state(self.sep_h2_to_trans)
-        
+
         # Initialize H2 translator
         self.translator_h2.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
-        # Propagate state N2 translator → Mixer N2 inlet
-        propagate_state(self.trans_n2_to_mixer_n2)
-        
-        # Propagate air separator O2-poor stream → Mixer N2 inlet
-        propagate_state(self.n2_air_to_mixer_n2)
-        
-        # Initialize mixer for N2 + O2-poor
-        self.mixer_n2.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
-        # Propagate mixer N2 outlet → Heater inlet
-        propagate_state(self.n2_to_heater)
-        
-        # Initialize heater
-        self.heater.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
-        # Propagate heater outlet → Mixer out N2 stream final
-        propagate_state(self.heater_to_mixer_out)
-        
+
+        # Propagate N2 translator → Heater N2 inlet
+        propagate_state(self.trans_n2_to_heater_n2)
+
+        # Initialize Heater for N2
+        self.heater_n2.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
+
+        # Propagate heater N2 outlet → Mixer out (N2 stream)
+        propagate_state(self.heat_n2_to_mix_out)
+
         # Initialize air separator
         self.air_separator.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
-        # Propagate air separator O2-rich stream → Translator O2 inlet
-        propagate_state(self.o2_air_to_trans_o2)
-        
-        # Initialize translator O2
+
+        # Propagate O2-poor stream → Heater for air
+        propagate_state(self.n2_air_to_heater_air)
+
+        # Initialize heater for cathode side air
+        self.heater_air.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
+
+        # Propagate heated O2-poor → mixer_air
+        propagate_state(self.heat_o2_to_mix_air)
+
+        # Propagate air separator O2-rich → Translator O2 inlet
+        propagate_state(self.sep_o2_to_trans)
+
+        # Initialize translator for O2-rich stream
         self.translator_o2.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
+
         # Propagate translator O2 outlet → Mixer O2-rich inlet
         propagate_state(self.o2_to_mixer)
-        
+
         # Propagate translator H2 outlet → Mixer H2 inlet
         propagate_state(self.h2_to_mixer)
-        
+
         # Initialize mixer for H2 and O2-rich stream
         self.mixer.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
+
         # Propagate mixer outlet → Reactor inlet
         propagate_state(self.mix_to_reactor)
-        
-        # Initialize SOEC reactor
+
+        # Initialize SOFC reactor
         self.reactor.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
+
         # Propagate reactor outlet → Reactor separator inlet
         propagate_state(self.react_to_sep)
-        
+
         # Initialize reactor separator
         self.reactor_separator.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
+
         # Propagate reactor separator water stream → Translator H2 out inlet
-        propagate_state(self.separator_fuel_to_translator)
-        
-        # Initialize translator H2 out
+        propagate_state(self.sep_h2o_to_trans)
+
+        # Initialize translator for H2O → recycle basis
         self.translator_h2_out.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
+
+        # Propagate translator H2 out → mixer_out
+        propagate_state(self.h2o_to_mixer_out)
+
         # Propagate reactor separator O2 stream → Translator O2 out inlet
-        propagate_state(self.separator_o2rich_to_translator)
-        
-        # Initialize translator O2 out
+        propagate_state(self.react_sep_o2_to_trans)
+
+        # Initialize translator for O2 out
         self.translator_o2_out.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
-        
-        # Propagate translator O2 out outlet → Mixer out O2 stream inlet
-        propagate_state(self.o2_to_mixer_out)
-        
-        # Initialize final mixer
+
+        # Propagate translator O2 out → mixer_air
+        propagate_state(self.o2_to_mixer_air)
+
+        # Initialize mixer for cathode air side
+        self.mixer_air.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
+
+        # Initialize mixer for recycled N2 and H2O stream
         self.mixer_out.initialize(outlvl=outlvl, solver=solver, optarg=optarg)
+
 
 
 
