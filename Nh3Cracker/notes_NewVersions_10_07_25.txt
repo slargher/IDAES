@@ -1,0 +1,13 @@
+file _nv: file iniziale SOFC_unit_nh3_cracker.py (DOF = 4) con constraint dei translator corretti DOF = 3 
+
+file _nv_1: constraint corretti, 1 solo heater (heater_air tenuto, heater_n2 tolto), equazione di bilancio riscritta
+come heater_air.heat + P_sofc + cracker.heat_o_reaction + reactor.heat_of_reaction = 0
+con reactor e cracker has_heat_transfer = False -> DOF = 0 ma l'inizializzatore da problemi, dice che non riesce ad inizializzare il reattore e il cracker
+con reactor e cracker has_heat_transfer = True -> ovviamente DOF = 2 ma inizializzazione di queste due unità non da problemi
+1.1 ammonia_PR.py -> aggiumta di arhenius e activation energy values
+
+file _nv_2: constraints corretti, 2 heater mantenuti, equzione di bilancio riscritta DOF = 1
+
+Tutte danno infeasibility
+
+
